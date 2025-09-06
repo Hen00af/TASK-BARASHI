@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>タスクばらし（ハッカソン用・単一HTML）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root{
+    --bg:#f5f7fb; --card:#ffffff; --ink:#1f2937;
+    --muted:#6b7280; --ring:#e5e7eb; --shadow:0 8px 20px rgba(16,24,40,.06);
+    --green:#22c55e; --blue:#38bdf8; --gray:#d1d5db;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:24px; background:var(--bg); color:var(--ink);
+    font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+  }
+  h1{font-size:20px;margin:0 0 16px}
+  .bar{
+    display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+    padding:12px; background:var(--card); border:1px solid var(--ring);
+    border-radius:12px; box-shadow:var(--shadow); margin-bottom:16px;
+  }
+  input,select,button{
+    height:40px; padding:0 12px; border-radius:10px; border:1px solid var(--ring);
+    background:#fff; color:var(--ink); font-size:14px;
+  }
+  button{cursor:pointer}
+  button.primary{background:#111827; color:#fff; border-color:#111827}
+  button.ghost{background:transparent}
+  small.muted{color:var(--muted)}
+  .grid{
+    display:grid; gap:16px;
+    grid-template-columns: 1.2fr .8fr;
+  }
+  @media (max-width:900px){ .grid{grid-template-columns: 1fr} }
+
+  .panel{
+    background:var(--card); border:1px solid var(--ring); border-radius:12px;
+    box-shadow:var(--shadow);
+  }
+  .panel header{
+    padding:12px 16px; border-bottom:1px solid var(--ring);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .panel .content{ padding:12px 16px; }
+
+  ul.tree{list-style:none; padding-left:0; margin:0}
+  li.task{
+    list-style:none; margin:10px 0; padding:10px; border:1px solid var(--ring);
+    border-radius:10px; background:#fff;
+  }
+  .row{
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+  }
+  .title{font-weight:600}
+  .badge{
+    font-weight:700; font-size:12px; padding:2px 8px; border-radius:999px; border:1px solid var(--ring);
+  }
+  .未着手{background:#f3f4f6}
+  .作業中{background:#e0f2fe; border-color:#bae6fd}
+  .完了{background:#dcfce7; border-color:#bbf7d0; color:#065f46}
+
+  .actions button{height:32px}
+  .progress{height:8px; background:var(--gray); border-radius:999px; overflow:hidden}
+  .progress > span{display:block; height:100%; background:var(--green); width:0; transition:width .25s ease}
+
+  .stats-row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .chip{padding:6px 10px; border-radius:999px; background:#f3f4f6; border:1px solid var(--ring); font-size:12px}
+  .ownerbar{height:8px; background:#e5e7eb; border-radius:999px; overflow:hidden; width:140px}
+  .ownerbar > span{display:block; height:100%; background:var(--blue); width:0}
+  .footer-note{margin-top:6px}
+</style>
+</head>
+<body>
+  <h1>タスクばらし（1ファイル完結）</h1>
+
+  <!-- 入力バー -->
+  <div class="bar">
+    <input id="taskInput" placeholder="タスク名" style="min-width:220px" />
+    <input id="ownerInput" placeholder="担当者（未定可）" style="min-width:160px" />
+    <select id="parentSelect" title="親タスク">
+      <option value="">（親タスクなし）</option>
+    </select>
+    <button class="primary" id="addBtn">追加</button>
+    <span style="flex:1"></span>
+    <button id="toggleStatsBtn">📊 統計を表示/非表示</button>
+    <button id="exportJsonBtn">💾 保存（復元用JSON）</button>
+    <button id="exportMdBtn">📄 保存（Markdown）</button>
+    <label class="ghost" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="file" id="fileInput" style="display:none" />
+      <span>📂 読み込み</span>
+    </label>
+  </div>
+  <div class="footer-note"><small class="muted">※ 「復元用JSON」はアプリの状態（階層・担当・状態）をそのまま復元できます。</small></div>
+
+  <div class="grid">
+    <!-- タスクリスト -->
+    <section class="panel">
+      <header>
+        <strong>タスク一覧</strong>
+        <div class="stats-row" id="topCounters"></div>
+      </header>
+      <div class="content">
+        <ul class="tree" id="taskList"></ul>
+      </div>
+    </section>
+
+    <!-- 統計 -->
+    <section class="panel" id="statsPanel" style="display:none">
+      <header><strong>統計 / 進捗</strong></header>
+      <div class="content" id="statsContent">
+        <!-- 動的に描画 -->
+      </div>
+    </section>
+  </div>
+
+<script>
+  // ===================== データ =====================
+  let tasks = [];        // 階層ツリー
+  let taskId = 0;        // 自動ID
+  const STATUS = ["未着手","作業中","完了"];
+
+  // 起動時：localStorageから自動復元
+  (function boot(){
+    try{
+      const cached = localStorage.getItem("taskbreak_v1");
+      if (cached){
+        tasks = JSON.parse(cached);
+        taskId = findMaxId(tasks) + 1;
+      }
+    }catch(e){ console.warn(e); }
+    render();
+  })();
+
+  // ===================== 追加・編集 =====================
+  document.getElementById("addBtn").addEventListener("click", addTask);
+  document.getElementById("taskInput").addEventListener("keydown", e=>{ if(e.key==="Enter") addTask(); });
+
+  function addTask(){
+    const name  = document.getElementById("taskInput").value.trim();
+    const owner = document.getElementById("ownerInput").value.trim() || "未定";
+    const parentId = document.getElementById("parentSelect").value;
+    if (!name) return;
+
+    const newTask = { id: taskId++, name, owner, status: "未着手", children: [] };
+    if (parentId === ""){
+      tasks.push(newTask);
+    }else{
+      const parent = findTaskById(tasks, parseInt(parentId,10));
+      if (parent) parent.children.push(newTask);
+    }
+    document.getElementById("taskInput").value = "";
+    document.getElementById("ownerInput").value = "";
+    render();
+  }
+
+  function editTask(id){
+    const t = findTaskById(tasks,id); if(!t) return;
+    const newName  = prompt("新しいタスク名を入力", t.name);
+    const newOwner = prompt("新しい担当者を入力（未定可）", t.owner);
+    if (newName !== null && newName.trim() !== "") t.name = newName.trim();
+    if (newOwner !== null && newOwner.trim() !== "") t.owner = newOwner.trim();
+    render();
+  }
+
+  function changeStatus(id, newStatus){
+    const t = findTaskById(tasks,id); if(!t) return;
+    t.status = newStatus;
+    // 子→親の自動波及（親の状態を自動更新）
+    updateParentStatuses(tasks);
+    render();
+  }
+
+  // ===================== 探索・集計 =====================
+  function findTaskById(list, id){
+    for(const t of list){
+      if (t.id === id) return t;
+      const f = findTaskById(t.children,id);
+      if (f) return f;
+    }
+    return null;
+  }
+
+  function findMaxId(list){
+    let max = -1;
+    (function walk(arr){
+      for(const t of arr){
+        if (t.id > max) max = t.id;
+        if (t.children && t.children.length) walk(t.children);
+      }
+    })(list);
+    return max;
+  }
+
+  // 親タスクの状態を子の状態から自動更新
+  function updateParentStatuses(list){
+    for(const t of list){
+      if (t.children.length){
+        updateParentStatuses(t.children);
+        const allUnstarted = t.children.every(c => c.status === "未着手");
+        const allDone      = t.children.every(c => c.status === "完了");
+        const anyDoing     = t.children.some (c => c.status === "作業中");
+        t.status = allDone ? "完了" : (anyDoing || !allUnstarted ? "作業中" : "未着手");
+      }
+    }
+  }
+
+  // 子孫の進捗％（親用バー）
+  function calcProgressForParent(task){
+    let total=0, done=0;
+    (function walk(list){
+      for(const t of list){
+        total++;
+        if (t.status==="完了") done++;
+        if (t.children.length) walk(t.children);
+      }
+    })(task.children);
+    if (total===0) return task.status==="完了" ? 100 : 0;
+    return Math.round(done/total*100);
+  }
+
+  function countAll(list){
+    let total=0, done=0;
+    (function walk(arr){
+      for(const t of arr){
+        total++;
+        if (t.status==="完了") done++;
+        if (t.children.length) walk(t.children);
+      }
+    })(list);
+    return {total,done};
+  }
+
+  function statsByOwner(){
+    const map = {};
+    (function walk(arr){
+      for(const t of arr){
+        if (!map[t.owner]) map[t.owner] = {total:0,done:0};
+        map[t.owner].total++;
+        if (t.status==="完了") map[t.owner].done++;
+        if (t.children.length) walk(t.children);
+      }
+    })(tasks);
+    return map;
+  }
+
+  // ===================== 描画 =====================
+  function render(){
+    // 親の自動状態（子変更による波及）を念のため毎回反映
+    updateParentStatuses(tasks);
+
+    const listEl = document.getElementById("taskList");
+    const parentSelect = document.getElementById("parentSelect");
+    listEl.innerHTML = "";
+    parentSelect.innerHTML = `<option value="">（親タスクなし）</option>`;
+
+    function renderTasks(arr, mount){
+      for(const t of arr){
+        const li = document.createElement("li");
+        li.className = "task";
+
+        // 1行目：バッジ・タイトル・担当・状態セレクト・編集
+        const row = document.createElement("div"); row.className="row";
+        const badge = document.createElement("span"); badge.className=`badge ${t.status}`; badge.textContent=t.status;
+        const title = document.createElement("span"); title.className="title"; title.textContent = t.name;
+        const owner = document.createElement("span"); owner.className="muted"; owner.textContent = `（担当: ${t.owner}）`;
+
+        const sel = document.createElement("select");
+        STATUS.forEach(s=>{
+          const o = document.createElement("option"); o.value=s; o.textContent=s;
+          if (t.status===s) o.selected = true;
+          sel.appendChild(o);
+        });
+        sel.onchange = () => changeStatus(t.id, sel.value);
+
+        const edit = document.createElement("button"); edit.textContent="✏️ 編集"; edit.onclick=()=>editTask(t.id);
+
+        row.appendChild(badge); row.appendChild(title); row.appendChild(owner);
+        row.appendChild(sel); row.appendChild(edit);
+        li.appendChild(row);
+
+        // 親なら進捗バー
+        if (t.children.length){
+          const pct = calcProgressForParent(t);
+          const bar = document.createElement("div"); bar.className="progress";
+          const fill = document.createElement("span"); fill.style.width = pct+"%";
+          bar.appendChild(fill);
+          li.appendChild(bar);
+        }
+
+        // 次の階層
+        mount.appendChild(li);
+        parentSelect.insertAdjacentHTML("beforeend", `<option value="${t.id}">${t.name}</option>`);
+        if (t.children.length){
+          const sub = document.createElement("ul"); sub.className="tree";
+          renderTasks(t.children, sub);
+          li.appendChild(sub);
+        }
+      }
+    }
+    renderTasks(tasks, listEl);
+
+    // 上部の全体カウンタ
+    const {total,done} = countAll(tasks);
+    const top = document.getElementById("topCounters");
+    const percent = total? Math.round(done/total*100) : 0;
+    top.innerHTML = `
+      <span class="chip">全体: ${done} / ${total} 完了（${percent}%）</span>
+    `;
+
+    // 統計パネル
+    renderStats();
+
+    // 自動下書き保存
+    try{ localStorage.setItem("taskbreak_v1", JSON.stringify(tasks)); }catch(e){}
+  }
+
+  function renderStats(){
+    const box = document.getElementById("statsContent");
+    const owners = statsByOwner();
+    let html = "";
+
+    // 担当者別
+    html += `<div class="stats-row" style="margin-bottom:10px;"><strong>担当者別</strong></div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:8px">`;
+    Object.keys(owners).forEach(name=>{
+      const {total,done} = owners[name];
+      const pct = total? Math.round(done/total*100) : 0;
+      html += `
+        <div class="stats-row">
+          <span class="chip">${name}</span>
+          <div class="ownerbar"><span style="width:${pct}%"></span></div>
+          <small class="muted">${done}/${total} (${pct}%)</small>
+        </div>`;
+    });
+    html += `</div>`;
+
+    // 親タスク別
+    html += `<hr style="border:none;border-top:1px solid var(--ring);margin:12px 0">`;
+    html += `<div class="stats-row" style="margin-bottom:8px;"><strong>親タスク別</strong></div>`;
+    html += `<div style="display:flex;flex-direction:column;gap:8px">`;
+    tasks.forEach(t=>{
+      const {total,done} = countAll([t]);
+      const pct = total? Math.round(done/total*100) : 0;
+      html += `
+        <div class="stats-row">
+          <span class="chip">${t.name}</span>
+          <div class="ownerbar"><span style="width:${pct}%"></span></div>
+          <small class="muted">${done}/${total} (${pct}%)</small>
+        </div>`;
+    });
+    html += `</div>`;
+
+    box.innerHTML = html;
+  }
+
+  // ===================== 統計トグル =====================
+  document.getElementById("toggleStatsBtn").addEventListener("click", ()=>{
+    const p = document.getElementById("statsPanel");
+    p.style.display = (p.style.display==="none"||!p.style.display) ? "block" : "none";
+  });
+
+  // ===================== 保存/読み込み =====================
+  document.getElementById("exportJsonBtn").addEventListener("click", saveTasksJSON);
+  document.getElementById("exportMdBtn").addEventListener("click", saveTasksMD);
+  document.getElementById("fileInput").addEventListener("change", loadTasks);
+
+  function saveTasksJSON(){
+    const data = JSON.stringify(tasks,null,2);
+    downloadBlob(data, "tasks.json", "application/json");
+  }
+  function saveTasksMD(){
+    const md = "# タスク一覧\n\n" + toMarkdown(tasks);
+    downloadBlob(md, "tasks.md", "text/markdown");
+  }
+  function toMarkdown(list, depth=0){
+    let out = "";
+    list.forEach(t=>{
+      const indent = "  ".repeat(depth);
+      out += `${indent}- (${t.status}) ${t.name} （担当: ${t.owner}）\n`;
+      if (t.children.length) out += toMarkdown(t.children, depth+1);
+    });
+    return out;
+  }
+  function downloadBlob(text, filename, type){
+    const blob = new Blob([text], {type});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+  function loadTasks(e){
+    const f = e.target.files[0]; if(!f) return;
+    const reader = new FileReader();
+    reader.onload = (ev)=>{
+      try{
+        tasks = JSON.parse(ev.target.result);
+        taskId = findMaxId(tasks)+1;
+        render();
+      }catch(err){ alert("JSONの読み込みに失敗しました"); }
+      e.target.value = "";
+    };
+    reader.readAsText(f);
+  }
+</script>
+</body>
+</html>
+
